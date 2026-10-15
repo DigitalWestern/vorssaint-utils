@@ -406,6 +406,14 @@ enum NotchPresentationProbe {
         exit(failures.isEmpty ? 0 : 1)
     }
 
+    /// Each mode `runAndExit` handles selects the probe on its own, so none of
+    /// them falls through to launching the whole app. Keep in step with it.
+    static func isRequested(by arguments: [String]) -> Bool {
+        let modes = ["--notch-presentation-test", "--media-layout", "--mission-control",
+                     "--preview-notice", "--profile-only", "--quick-access-clicks"]
+        return arguments.contains(where: modes.contains)
+    }
+
     static func runAndExit() -> Never {
         if CommandLine.arguments.contains("--media-layout") { NotchMediaPresentationProbe.runAndExit() }
         if CommandLine.arguments.contains("--mission-control") { runMissionControlAndExit() }
