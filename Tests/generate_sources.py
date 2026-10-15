@@ -1304,11 +1304,12 @@ def main():
           + declaration("Sources/Vorssaint/Services/QuickTools/QuickTogglesService.swift", "enum QuickToggleAction:")
           + "}\n")
 
-    # The Developer probe's argument check, outside its development-only file.
+    # The Developer probe's modes and argument check, outside its development-only file.
+    probe = "Sources/Vorssaint/Support/NotchPresentationProbe.swift"
     write("NotchPresentationProbeArguments.swift", "import Foundation\n\nextension NotchPresentationProbeArgumentTests {\n"
           + "enum Probe {\n"
-          + declaration("Sources/Vorssaint/Support/NotchPresentationProbe.swift", "    static func isRequested(",
-                        scope="enum NotchPresentationProbe {")
+          + "".join(declaration(probe, prefix, scope="enum NotchPresentationProbe {")
+                    for prefix in ["    enum Mode:", "    static func isRequested("])
           + "}\n}\n")
 
     preview = "Sources/Vorssaint/Services/QuickTools/ScreenshotQuickPreviewController.swift"
