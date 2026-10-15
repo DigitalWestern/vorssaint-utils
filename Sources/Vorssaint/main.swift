@@ -10,7 +10,9 @@ MouseAccelerationGuard.runIfRequestedAndExit()
 MouseAccelerationService.recoverPendingAtLaunch()
 
 #if VORSSAINT_DEVELOPMENT
-if CommandLine.arguments.contains("--notch-presentation-test") {
+// `--media-layout` on its own would otherwise launch the whole app, and TCC
+// kills that from a shell whose host app lacks a Bluetooth usage description.
+if CommandLine.arguments.contains("--notch-presentation-test") || CommandLine.arguments.contains("--media-layout") {
     NotchPresentationProbe.runAndExit()
 }
 #endif
