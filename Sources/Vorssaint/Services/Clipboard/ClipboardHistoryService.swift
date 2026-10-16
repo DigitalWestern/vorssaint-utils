@@ -47,6 +47,9 @@ final class ClipboardHistoryService: ObservableObject {
     /// pinned entries always sort first there.
     @Published private(set) var latestPasteboardEntry: ClipboardHistoryEntry?
     let capturedEntry = PassthroughSubject<ClipboardHistoryEntry, Never>()
+    /// The last capture turned out to be a dictation app's paste, undone the
+    /// moment it put the old clipboard back, so its notice should go too.
+    let retractedCapture = PassthroughSubject<Void, Never>()
     @Published private(set) var isRunning = false
     @Published private(set) var shortcutRegistrationFailed = false
     @Published private(set) var quickBatchEntryIDs: Set<UUID> = []
@@ -79,6 +82,10 @@ final class ClipboardHistoryService: ObservableObject {
     /// skips it until the editor lets go; the next trim then applies as usual.
     var editingEntryID: UUID?
     private var lastChangeCount = 0
+    /// The clipboard a copy just replaced, the entry that copy added if it
+    /// was new, whether that copy was announced, and when. Its coming back
+    /// soon after undoes the copy.
+    private var pendingRestore: (previous: ClipboardHistoryEntry, addedID: UUID?, announced: Bool, at: Date)?
     /// The poll reads the pasteboard off the main thread: while a password
     /// prompt is up the pasteboard server can take seconds to answer, and a
     /// blocked main thread stalls every event tap with it, so typing freezes
@@ -748,20 +755,67 @@ final class ClipboardHistoryService: ObservableObject {
                 read: result.changeCount, since: sinceChangeCount, last: self.lastChangeCount
             ) else { return }
             self.lastChangeCount = accepted
+            let previous = self.latestPasteboardEntry
+            let pending = self.pendingRestore
+            self.pendingRestore = nil
             // The pasteboard changed to something this check is about to
             // decide not to record (an ignored app, a concealed/secret copy,
             // or an image with the images toggle off): the menu bar preview
             // must not keep advertising the previous entry as still current.
             // A recording path below sets this back.
             self.latestPasteboardEntry = nil
-            guard !source.excluded, let content = result.content else { return }
+            guard !source.excluded, let content = result.content else {
+                // A write left out on purpose, such as a dictation app's
+                // marked paste, is still followed by the old clipboard.
+                self.pendingRestore = previous.map { (previous: $0, addedID: nil, announced: false, at: Date()) }
+                return
+            }
             // A copy out of the history's own panel, such as text selected in
             // the preview, is of an entry already there, and its app stays.
             let keepsSource = source.fromHistoryPanel
+            let restored = self.matchingEntry(for: content)
+            if let restored {
+                // Put on and taken off again between two looks: the clipboard
+                // never really changed.
+                if restored.id == previous?.id,
+                   ClipboardHistoryPasteRestore.changedTwice(read: result.changeCount, since: sinceChangeCount) {
+                    self.latestPasteboardEntry = restored
+                    return
+                }
+                // The clipboard a copy replaced, back within moments: that
+                // copy was a dictation app's paste, so it leaves no trace.
+                if let pending, restored.id == pending.previous.id,
+                   ClipboardHistoryPasteRestore.isWithinWindow(capturedAt: pending.at, now: Date()) {
+                    // Only a copy that was announced has a notice to take back.
+                    if pending.announced { self.retractedCapture.send() }
+                    if let addedID = pending.addedID,
+                       let added = self.entries.first(where: { $0.id == addedID && !$0.isPinned }) {
+                        self.remove(added)
+                        self.latestPasteboardEntry = self.entries.first { $0.id == restored.id }
+                    } else {
+                        // Moved back up without announcing, under the same
+                        // checks a fresh copy of its text would face.
+                        if case .text(let raw) = content {
+                            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !text.isEmpty, text.count <= ClipboardHistoryEditing.maxCharacters,
+                                  !(UserDefaults.standard.bool(forKey: DefaultsKey.clipboardHistoryFilterSensitiveText)
+                                    && self.looksSensitive(text)) else { return }
+                        }
+                        self.touch([restored.id])
+                        self.latestPasteboardEntry = self.entries.first { $0.id == restored.id }
+                    }
+                    return
+                }
+            }
             switch content {
             case .files(let paths): self.promoteFiles(paths, source: source.bundleID, keepsSource: keepsSource)
             case .image(let image): self.promoteImage(image, source: source.bundleID, keepsSource: keepsSource)
             case .text(let text): self.promote(text, source: source.bundleID, keepsSource: keepsSource)
+            }
+            if let previous {
+                self.pendingRestore = (previous: previous,
+                                       addedID: restored == nil ? self.latestPasteboardEntry?.id : nil,
+                                       announced: self.latestPasteboardEntry != nil, at: Date())
             }
         }, didFinish: { [weak self] _ in
             self?.captureState.finish()
@@ -774,6 +828,8 @@ final class ClipboardHistoryService: ObservableObject {
     private func matchingEntry(for content: CapturedContent) -> ClipboardHistoryEntry? {
         switch content {
         case .text(let text):
+            // Saved the way promote saves it, without the surrounding space.
+            let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return entries.first(where: { $0.kind == .text && $0.text == text })
         case .image(let image):
             let hash = Self.sha256Hex(image.data)
@@ -791,7 +847,10 @@ final class ClipboardHistoryService: ObservableObject {
         // what the apps that keep passwords do when they hand one over. Said
         // that plainly by the app itself, it is taken at its word and the
         // content is never even read, whatever the other options say.
-        if ClipboardHistorySensitiveText.isConcealed((pasteboard.types ?? []).map(\.rawValue)) {
+        // Content its app is about to take back, which is how a dictation
+        // app types, is no copy either, and is left unread the same way.
+        let types = (pasteboard.types ?? []).map(\.rawValue)
+        if ClipboardHistorySensitiveText.isConcealed(types) || ClipboardHistorySensitiveText.isTransient(types) {
             return nil
         }
         // Files first: a Finder copy also carries name strings, and a browser
