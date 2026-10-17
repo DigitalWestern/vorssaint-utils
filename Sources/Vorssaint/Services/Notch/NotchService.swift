@@ -1066,6 +1066,12 @@ final class NotchService: ObservableObject {
     var showsSystemFeedback: Bool {
         acceptsSystemFeedback && (!hiddenUntilHover || NotchSupport.hiddenShowsActivity())
     }
+    /// The island shows a volume level right now, so macOS' own banner for
+    /// the same change would only repeat it. A change the island leaves
+    /// quiet, or cannot read, keeps that banner.
+    var showsVolumeNotice: Bool {
+        showsSystemFeedback && notice?.event == .volume
+    }
 
     var protectedWindowIDs: Set<CGWindowID> {
         islandWindowIDs.subtracting(captureVisibleWindowIDs)
