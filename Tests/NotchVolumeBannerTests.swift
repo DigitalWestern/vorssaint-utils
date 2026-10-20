@@ -6,10 +6,7 @@ import CoreGraphics
 enum NotchVolumeBannerTests {
     static func run(_ suite: TestSuite) {
         typealias Banner = NotchVolumeBannerSupport
-        suite.expect(Banner.isBanner("volume-system-banner"), "the volume banner is recognized")
-        for other in ["listening-mode-system-banner", "battery-system-banner", "", nil] as [String?] {
-            suite.expect(!Banner.isBanner(other), "other menu bar windows stay where they are: \(other ?? "nil")")
-        }
+        suite.expect(Banner.identifier == "volume-system-banner", "the volume banner is recognized")
 
         let builtIn = CGRect(x: 0, y: 0, width: 1710, height: 1107)
         let banner = CGRect(x: 1355, y: 34, width: 352, height: 153)

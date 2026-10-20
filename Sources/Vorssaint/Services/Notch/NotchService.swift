@@ -1066,23 +1066,16 @@ final class NotchService: ObservableObject {
     var showsSystemFeedback: Bool {
         acceptsSystemFeedback && (!hiddenUntilHover || NotchSupport.hiddenShowsActivity())
     }
-    /// The island shows a volume level right now, so macOS' own banner for
-    /// the same change would only repeat it. A change the island leaves
-    /// quiet, or cannot read, keeps that banner, and so does a notice that
-    /// capture controls, a file drop hint, or the Command Bar draw over.
-    var showsVolumeNotice: Bool {
-        showsSystemFeedback && notice?.event == .volume && captureControls == nil && !dragPlaceholder
-            && !showingCommandBar
+    /// Whether macOS' volume banner may leave: the island shows the same
+    /// level (.shown), or something keeps it from showing one (.covered: a
+    /// cover, a hidden island, another notice in its place). A notice that
+    /// simply ended is .quiet and leaves its banner to expire.
+    var volumeBanner: NotchVolumeBannerState {
+        guard showsSystemFeedback, captureControls == nil, !dragPlaceholder, !showingCommandBar else { return .covered }
+        guard let notice else { return .quiet }
+        return notice.event == .volume ? .shown : .covered
     }
-    /// Something keeps the island from showing a volume level: a cover,
-    /// even one that cleared the notice as it opened, a hidden island, or
-    /// another notice in the volume notice's place. A notice that has simply
-    /// ended is none of these.
-    var coversVolumeNotice: Bool {
-        !showsVolumeNotice && (notice != nil || !showsSystemFeedback || captureControls != nil || dragPlaceholder
-            || showingCommandBar)
-    }
-    /// Every published value the two answers above depend on. Opening and
+    /// Every published value the answer above depends on. Opening and
     /// peeking also decide whether the island waits for the pointer. Each
     /// value arrives before its change lands.
     var volumeNoticeChanges: AnyPublisher<Void, Never> {

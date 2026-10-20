@@ -3,6 +3,10 @@
 
 import CoreGraphics
 
+/// Whether the island shows a volume level, is kept from showing one, or
+/// has no volume notice up.
+enum NotchVolumeBannerState { case shown, covered, quiet }
+
 /// macOS raises its own volume banner for a level set outside the volume keys,
 /// such as a swipe on AirPods, so taking the keys alone never kept it away.
 /// The island shows that level too. While it does, the banner leaves the screen.
@@ -10,10 +14,6 @@ enum NotchVolumeBannerSupport {
     /// The menu bar process that draws the banner, on macOS 27 and later.
     static let host = "com.apple.MenuBarAgent"
     static let identifier = "volume-system-banner"
-
-    static func isBanner(_ identifier: String?) -> Bool {
-        identifier == self.identifier
-    }
 
     static func isOffScreen(_ frame: CGRect, screens: [CGRect]) -> Bool {
         let union = screens.reduce(CGRect.null) { $0.union($1) }

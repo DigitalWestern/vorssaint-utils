@@ -11,19 +11,19 @@ import Combine
 final class NotchVolumeBannerGuard {
     private var observer: AXObserver?
     private var pid: pid_t?
+    /// Kept past detach so banners already hidden can still be put back.
+    private var access: NotchNativeNotificationAccess?
     private var running = false
     private var workspaceObservers: [NSObjectProtocol] = []
     private var islandWatch: AnyCancellable?
-    /// Every question to the menu bar waits for it to answer, up to a tenth
-    /// of a second while it rebuilds for another app. Those waits stay here,
-    /// off the main thread.
+    /// Questions to the menu bar can wait a tenth of a second for its
+    /// answer, so they stay off the main thread.
     private let queue = DispatchQueue(label: "com.vorssaint.notch-volume-banner", qos: .userInteractive)
     /// Banners this guard moved, and where macOS had placed each. A banner
     /// per display at most, so only the latest few are kept.
     private var hidden: [(window: AXUIElement, origin: CGPoint)] = []
-    /// The menu bar announces a new window as it shows it, already named.
-    /// Its earlier creation notice comes before the name is set, so it would
-    /// only cost a read. A banner the menu bar places again is moved again.
+    /// A new window is announced already named. Its earlier creation
+    /// notice would only cost a read.
     private let notifications = [kAXWindowCreatedNotification, kAXWindowMovedNotification]
 
     func start() {
@@ -37,19 +37,14 @@ final class NotchVolumeBannerGuard {
             }
         }
         if islandWatch == nil {
-            // A change's banner and the island's notice arrive in either
-            // order, so a banner already up leaves once the notice shows.
-            // Once something covers the island or takes the notice's place,
-            // the banners come back, so changes made under the cover still
-            // show. A notice that simply ends leaves its banner to expire,
-            // since the menu bar is fading it out by then. Published values
-            // arrive before they land, so the island is read a turn later.
+            // A banner already up leaves once the notice shows. Once
+            // something covers the island the banners come back, and a
+            // notice that simply ends leaves its banner to expire.
+            // Published values arrive before they land, so the island is
+            // read a turn later.
             islandWatch = NotchService.shared.volumeNoticeChanges
                 .receive(on: DispatchQueue.main)
-                .map { _ -> IslandVolume in
-                    let island = NotchService.shared
-                    return island.showsVolumeNotice ? .shown : island.coversVolumeNotice ? .covered : .quiet
-                }
+                .map { _ in NotchService.shared.volumeBanner }
                 .removeDuplicates()
                 .sink { [weak self] state in
                     switch state {
@@ -73,13 +68,11 @@ final class NotchVolumeBannerGuard {
         restoreHidden()
     }
 
-    private enum IslandVolume { case shown, covered, quiet }
-
     private func restoreHidden() {
         let banners = hidden
         hidden.removeAll()
-        guard !banners.isEmpty else { return }
-        queue.async { banners.forEach { Self.restore($0.window, to: $0.origin) } }
+        guard !banners.isEmpty, let access else { return }
+        queue.async { banners.forEach { Self.restore($0.window, to: $0.origin, using: access) } }
     }
 
     private func attach() {
@@ -107,6 +100,7 @@ final class NotchVolumeBannerGuard {
         }
         guard attached else { return }
         pid = nextPID
+        access = NotchNativeNotificationAccess(pid: nextPID)
         observer = created
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
         // A banner raised just before the guard started leaves as well.
@@ -122,28 +116,26 @@ final class NotchVolumeBannerGuard {
     }
 
     private func scan() {
-        guard running, let pid else { return }
-        let app = AXUIElementCreateApplication(pid)
+        guard running, let access else { return }
         queue.async { [weak self] in
-            let windows = Self.windows(app)
+            let windows = (try? access.windows()) ?? []
             DispatchQueue.main.async { windows.forEach { self?.noticed($0) } }
         }
     }
 
-    /// Decides without asking the menu bar anything, so an island that shows
-    /// no volume costs no call at all. The menu bar places the banner as it
-    /// first draws it and takes a move only after that frame, so the first
-    /// couple of hundredths of a second of its fade-in still show.
+    /// Decides without asking the menu bar, so an island showing no volume
+    /// costs no call. The first frame of the fade-in still shows, since the
+    /// menu bar takes a move only after it.
     private func noticed(_ element: AXUIElement) {
-        guard running, NotchService.shared.showsVolumeNotice else { return }
+        guard running, let access, NotchService.shared.volumeBanner == .shown else { return }
         let queue = self.queue
         queue.async { [weak self] in
-            guard let origin = Self.hide(element) else { return }
+            guard let origin = Self.hide(element, using: access) else { return }
             DispatchQueue.main.async {
                 // Decided again as it lands: the guard may have stopped, or
                 // the island stopped showing volume, while the move ran.
-                guard let self, self.running, NotchService.shared.showsVolumeNotice else {
-                    queue.async { Self.restore(element, to: origin) }
+                guard let self, self.running, NotchService.shared.volumeBanner == .shown else {
+                    queue.async { Self.restore(element, to: origin, using: access) }
                     return
                 }
                 self.hidden.removeAll { CFEqual($0.window, element) }
@@ -154,22 +146,22 @@ final class NotchVolumeBannerGuard {
     }
 
     /// Where macOS had placed the banner, once it is out of sight.
-    private static func hide(_ element: AXUIElement) -> CGPoint? {
+    private static func hide(_ element: AXUIElement, using access: NotchNativeNotificationAccess) -> CGPoint? {
         AXUIElementSetMessagingTimeout(element, 0.1)
         let window = read(element)
-        guard NotchVolumeBannerSupport.isBanner(window.identifier), window.role == kAXWindowRole,
+        guard window.identifier == NotchVolumeBannerSupport.identifier, window.role == kAXWindowRole,
               let frame = window.frame,
               let away = NotchVolumeBannerSupport.hiddenOrigin(for: frame, screens: screens()),
-              move(element, to: away) else { return nil }
+              access.move(element, to: away) else { return nil }
         return frame.origin
     }
 
     /// A banner still on its way out comes back, so a change the island
     /// cannot show is not left without feedback.
-    private static func restore(_ window: AXUIElement, to origin: CGPoint) {
+    private static func restore(_ window: AXUIElement, to origin: CGPoint, using access: NotchNativeNotificationAccess) {
         AXUIElementSetMessagingTimeout(window, 0.1)
         guard let frame = read(window).frame, NotchVolumeBannerSupport.isOffScreen(frame, screens: screens()) else { return }
-        _ = move(window, to: origin)
+        _ = access.move(window, to: origin)
     }
 
     private static func screens() -> [CGRect] {
@@ -178,13 +170,6 @@ final class NotchVolumeBannerGuard {
         var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
         guard CGGetActiveDisplayList(count, &displays, &count) == .success else { return [] }
         return displays.prefix(Int(count)).map(CGDisplayBounds)
-    }
-
-    private static func windows(_ app: AXUIElement) -> [AXUIElement] {
-        AXUIElementSetMessagingTimeout(app, 0.1)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success else { return [] }
-        return value as? [AXUIElement] ?? []
     }
 
     /// One round trip for everything the guard needs. A value the window
@@ -203,11 +188,5 @@ final class NotchVolumeBannerGuard {
             && AXValueGetValue(unsafeBitCast(values[2], to: AXValue.self), .cgPoint, &origin)
             && AXValueGetValue(unsafeBitCast(values[3], to: AXValue.self), .cgSize, &extent)
         return (values[0] as? String, values[1] as? String, placed ? CGRect(origin: origin, size: extent) : nil)
-    }
-
-    private static func move(_ element: AXUIElement, to origin: CGPoint) -> Bool {
-        var origin = origin
-        guard let value = AXValueCreate(.cgPoint, &origin) else { return false }
-        return AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, value) == .success
     }
 }
