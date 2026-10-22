@@ -105,19 +105,12 @@ struct ClipboardHistoryCaptureState {
 
 /// Dictation apps such as Superwhisper type by putting their text on the
 /// clipboard, pasting it, and putting back whatever was there a moment later.
-/// Neither write is a copy the person made, so the history neither keeps nor
-/// announces them.
+/// An explicit temporary-content mark lets history recognize that return
+/// without treating ordinary repeated copies as a paste-and-restore.
 enum ClipboardHistoryPasteRestore {
-    /// How long after a copy the clipboard it replaced can come back and
-    /// still count as that copy being undone.
+    /// How long after an explicitly temporary write the previous clipboard
+    /// can come back without a second copy notice.
     static let window: TimeInterval = 3
-
-    /// Whether the count moved at least twice between two looks. Ending on
-    /// what was already there, that is something put on the clipboard and
-    /// taken off again; copying the same thing once more moves it only once.
-    static func changedTwice(read: Int, since: Int) -> Bool {
-        read - since >= 2
-    }
 
     static func isWithinWindow(capturedAt: Date, now: Date) -> Bool {
         now >= capturedAt && now.timeIntervalSince(capturedAt) <= window
